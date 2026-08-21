@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jobnotify"
-version = "0.1.0"
-description = "Send a Telegram alert when a long-running Python job finishes."
+version = "0.2.0"
+description = "Send a Telegram alert (with GPU / experiment / command) when a long-running job finishes."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
@@ -13,6 +13,10 @@ authors = [{ name = "bk" }]
 keywords = ["notification", "telegram", "training", "alert", "webhook"]
 # Zero runtime dependencies — standard library only.
 dependencies = []
+
+[project.scripts]
+# `jobnotify -- <command>` wrapper; `python -m jobnotify` works too.
+jobnotify = "jobnotify.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

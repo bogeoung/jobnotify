@@ -4,6 +4,7 @@ from __future__ import annotations
 import socket
 import time
 import traceback as _tb
+from typing import List, Optional, Sequence
 
 
 def _human_duration(seconds: float) -> str:
@@ -31,15 +32,72 @@ def _hostname() -> str:
         return "unknown-host"
 
 
-def format_success(job_name: str, start_ts: float, end_ts: float) -> str:
-    lines = [
-        "✅ Job finished: {}".format(job_name),
-        "host: {}".format(_hostname()),
+def _header(icon: str, title: str, job_name: str, context: Optional[Sequence[str]]) -> List[str]:
+    """Headline + the "where did this run" block (experiment / gpu / command)."""
+    return ["{} {}: {}".format(icon, title, job_name),
+            "host: {}".format(_hostname())] + list(context or [])
+
+
+def format_start(
+    job_name: str,
+    start_ts: float,
+    context: Optional[Sequence[str]] = None,
+) -> str:
+    lines = _header("▶️", "Job started", job_name, context)
+    lines.append("start: {}".format(_fmt_time(start_ts)))
+    return "\n".join(lines)
+
+
+def format_success(
+    job_name: str,
+    start_ts: float,
+    end_ts: float,
+    context: Optional[Sequence[str]] = None,
+) -> str:
+    lines = _header("✅", "Job finished", job_name, context)
+    lines += [
         "elapsed: {}".format(_human_duration(end_ts - start_ts)),
         "start: {}".format(_fmt_time(start_ts)),
         "end:   {}".format(_fmt_time(end_ts)),
     ]
     return "\n".join(lines)
+
+
+def format_exit(
+    job_name: str,
+    start_ts: float,
+    end_ts: float,
+    returncode: int,
+    context: Optional[Sequence[str]] = None,
+    output_tail: str = "",
+) -> str:
+    """Alert for a subprocess that ended — used by the CLI wrapper."""
+    ok = returncode == 0
+    lines = _header("✅" if ok else "❌",
+                    "Job finished" if ok else "Job FAILED",
+                    job_name, context)
+    lines.append("exit: {}".format(_describe_returncode(returncode)))
+    lines += [
+        "elapsed: {}".format(_human_duration(end_ts - start_ts)),
+        "start: {}".format(_fmt_time(start_ts)),
+        "end:   {}".format(_fmt_time(end_ts)),
+    ]
+    if output_tail:
+        lines += ["", "output (tail):", output_tail.rstrip()]
+    return "\n".join(lines)
+
+
+def _describe_returncode(returncode: int) -> str:
+    """``-2`` → ``killed by SIGINT (-2)``; a plain code stays a plain code."""
+    if returncode >= 0:
+        return str(returncode)
+    try:
+        import signal
+
+        name = signal.Signals(-returncode).name
+    except Exception:
+        return str(returncode)
+    return "killed by {} ({})".format(name, returncode)
 
 
 def format_failure(
@@ -48,11 +106,11 @@ def format_failure(
     end_ts: float,
     exc: BaseException,
     tb_lines: int = 12,
+    context: Optional[Sequence[str]] = None,
 ) -> str:
     tb_text = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
-    lines = [
-        "❌ Job FAILED: {}".format(job_name),
-        "host: {}".format(_hostname()),
+    lines = _header("❌", "Job FAILED", job_name, context)
+    lines += [
         "elapsed: {}".format(_human_duration(end_ts - start_ts)),
         "error: {}: {}".format(type(exc).__name__, exc),
         "start: {}".format(_fmt_time(start_ts)),
