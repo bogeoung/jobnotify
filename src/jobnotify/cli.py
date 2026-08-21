@@ -1,7 +1,8 @@
 """``jobnotify`` command-line wrapper.
 
-Runs any command and sends a Telegram alert when it ends, with the experiment
-name, the GPU it ran on, and the command itself in the message::
+Runs any command and sends a Telegram alert when it starts and when it ends,
+with the experiment name, the GPU it ran on, and the command itself in the
+message::
 
     jobnotify -- python -m poster.train --datasets pku
     jobnotify -e kd_pku_cgl -n "poster KD" -- python -m poster.train --pseudo x.jsonl
@@ -32,8 +33,8 @@ usage: jobnotify [options] -- COMMAND [ARGS...]
        jobnotify [options] --shell 'SHELL COMMAND'
        jobnotify --test
 
-Run COMMAND and send a Telegram alert when it finishes, including the
-experiment name, the GPU, and the command itself.
+Run COMMAND and send a Telegram alert when it starts and when it finishes,
+including the experiment name, the GPU, and the command itself.
 
 options:
   -n, --name NAME        job label in the alert headline (default: derived
@@ -41,7 +42,7 @@ options:
   -e, --experiment NAME  experiment id (default: $JOBNOTIFY_EXPERIMENT)
   -g, --gpu TEXT         override the auto-detected GPU description
       --shell            run the rest as one shell command line
-      --start            also send an alert when the job starts
+      --no-start         skip the "started" alert (finish alert only)
       --tail N           capture the last N output lines into the alert
                          (default 0 = no capture, output is untouched)
       --no-gpu           skip GPU detection entirely
@@ -59,7 +60,7 @@ class _Options:
         self.experiment: Optional[str] = None
         self.gpu: Optional[str] = None
         self.shell = False
-        self.start = False
+        self.start: Optional[bool] = None
         self.tail = 0
         self.no_gpu = False
         self.test = False
@@ -123,6 +124,8 @@ def _parse_options(tokens: Sequence[str]) -> _Options:
             opts.shell = True
         elif token == "--start":
             opts.start = True
+        elif token == "--no-start":
+            opts.start = False
         elif token == "--no-gpu":
             opts.no_gpu = True
         elif token == "--test":
@@ -277,7 +280,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ).lines()
 
     start = time.time()
-    if opts.start or load_config().notify_start:
+    want_start = opts.start if opts.start is not None else load_config().notify_start
+    if want_start:
         _dispatch(_message.format_start(name, start, ctx))
 
     try:

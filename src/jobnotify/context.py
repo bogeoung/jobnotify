@@ -31,20 +31,32 @@ _gpu_probe_done = False
 # --------------------------------------------------------------------------- #
 # GPU
 # --------------------------------------------------------------------------- #
-def _visible_devices() -> Optional[str]:
-    """Return the raw CUDA/NVIDIA visible-device spec, if one is set."""
+def _selected_ids():
+    """The device ids this process was given, e.g. ``(['0'], 'CUDA_VISIBLE_DEVICES')``.
+
+    Returns ``(None, None)`` when nothing restricts us — the process sees every
+    GPU on the machine.
+    """
     for name in _VISIBLE_ENV_VARS:
         raw = os.environ.get(name)
         if raw is None:
             continue
         raw = raw.strip()
-        # An explicitly empty value means "no GPU", which is worth reporting.
-        return "{}={}".format(name, raw if raw else "(empty → CPU only)")
-    return None
+        if not raw:
+            return [], name          # explicitly empty → no GPU at all
+        if raw.lower() in ("all", "none", "void"):
+            return (None, None) if raw.lower() == "all" else ([], name)
+        return [part.strip() for part in raw.split(",") if part.strip()], name
+    return None, None
 
 
-def _probe_nvidia_smi() -> Optional[List[str]]:
-    """``['0: NVIDIA RTX A6000', ...]`` for every GPU visible to this process."""
+def _probe_index_table():
+    """``{'0': 'NVIDIA RTX A6000', ...}`` straight from nvidia-smi."""
+    global _gpu_probe_cache, _gpu_probe_done
+    if _gpu_probe_done:
+        return _gpu_probe_cache
+    _gpu_probe_done = True
+    _gpu_probe_cache = None
     try:
         proc = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"],
@@ -56,22 +68,22 @@ def _probe_nvidia_smi() -> Optional[List[str]]:
         return None
     if proc.returncode != 0:
         return None
-    devices = []
+    table = {}
     for line in proc.stdout.decode("utf-8", "replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        index, _, name = line.partition(",")
-        devices.append("{}: {}".format(index.strip(), name.strip()))
-    return devices or None
+        index, _, name = line.strip().partition(",")
+        if index.strip() and name.strip():
+            table[index.strip()] = name.strip()
+    _gpu_probe_cache = table or None
+    return _gpu_probe_cache
 
 
-def _probe_torch() -> Optional[List[str]]:
-    """Same list via torch — only if torch is already imported AND initialized.
+def _probe_torch_names():
+    """Names of the devices *this process* can see, in torch's own order.
 
-    We never import torch ourselves (it is slow and has side effects), and we
-    never trigger CUDA init: this is a free read when the job is already using
-    the GPU, and a no-op otherwise.
+    Only when torch is already imported AND CUDA is already initialized: we
+    never import torch ourselves (slow, side effects) and never trigger CUDA
+    init. torch's indices are already remapped by CUDA_VISIBLE_DEVICES, so
+    ``names[k]`` is the k-th id in the selection.
     """
     torch = sys.modules.get("torch")
     if torch is None:
@@ -80,31 +92,26 @@ def _probe_torch() -> Optional[List[str]]:
         if not torch.cuda.is_initialized():  # type: ignore[union-attr]
             return None
         return [
-            "{}: {}".format(i, torch.cuda.get_device_name(i))  # type: ignore[union-attr]
+            torch.cuda.get_device_name(i)  # type: ignore[union-attr]
             for i in range(torch.cuda.device_count())  # type: ignore[union-attr]
         ]
     except Exception:
         return None
 
 
-def _probe_devices(allow_query: bool) -> Optional[List[str]]:
-    global _gpu_probe_cache, _gpu_probe_done
-    devices = _probe_torch()
-    if devices:
-        return devices
-    if not allow_query:
-        return None
-    if not _gpu_probe_done:
-        _gpu_probe_cache = _probe_nvidia_smi()
-        _gpu_probe_done = True
-    return _gpu_probe_cache
+def _render(pairs) -> str:
+    """``[('0', 'NVIDIA RTX A6000')]`` → ``0 (NVIDIA RTX A6000)``."""
+    ids = [str(i) for i, _ in pairs]
+    names = [name for _, name in pairs]
+    if not all(names):
+        return ",".join(ids)
+    if len(names) > 1 and len(set(names)) == 1:
+        return "{} ({} x{})".format(",".join(ids), names[0], len(names))
+    return ", ".join("{} ({})".format(i, n) for i, n in pairs)
 
 
 def describe_gpu(override: Optional[str] = None, config: Optional[Config] = None) -> Optional[str]:
-    """One-line GPU description, e.g.::
-
-        CUDA_VISIBLE_DEVICES=1 | 0: NVIDIA RTX A6000
-    """
+    """One-line answer to "which GPU is this running on", e.g. ``0 (NVIDIA RTX A6000)``."""
     try:
         config = config or load_config()
         if override:
@@ -112,14 +119,34 @@ def describe_gpu(override: Optional[str] = None, config: Optional[Config] = None
         if config.gpu_override:
             return config.gpu_override
 
-        parts = []
-        visible = _visible_devices()
-        if visible:
-            parts.append(visible)
-        devices = _probe_devices(allow_query=config.gpu_query_enabled)
-        if devices:
-            parts.append(", ".join(devices))
-        return " | ".join(parts) if parts else None
+        ids, source = _selected_ids()
+        if ids == []:
+            return "none (CPU only, {}=empty)".format(source)
+
+        torch_names = _probe_torch_names()
+        table = _probe_index_table() if config.gpu_query_enabled else None
+
+        if ids is not None:
+            # torch's order matches the selection one-for-one.
+            if torch_names and len(torch_names) == len(ids):
+                return _render(list(zip(ids, torch_names)))
+            if table:
+                pairs = [(i, table.get(i)) for i in ids]
+                if any(name for _, name in pairs):
+                    return _render(pairs)
+                # Container case: the ids are host ids, but nvidia-smi inside
+                # the container renumbers them. Report what we actually see.
+                return "{} [{}={}]".format(
+                    _render(sorted(table.items())), source, ",".join(ids)
+                )
+            return _render([(i, None) for i in ids])
+
+        # Nothing restricts us: report every device on the machine.
+        if table:
+            return _render(sorted(table.items()))
+        if torch_names:
+            return _render(list(enumerate(torch_names)))
+        return None
     except Exception:  # pragma: no cover - defensive
         return None
 

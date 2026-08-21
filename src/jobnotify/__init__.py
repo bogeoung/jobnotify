@@ -5,8 +5,9 @@ Public API:
     notify_scope(job_name)       context manager: alert on success AND failure
     notify_on_finish(job_name)   decorator form of notify_scope
 
-Alerts carry the run context — experiment name, GPU, and the command that
-launched the process — so you can tell two runs apart from the phone. Pass
+You get one alert when the job starts and one when it finishes, both carrying
+the run context — experiment name, GPU, and the command that launched the
+process — so you can tell two runs apart from the phone. Pass
 ``experiment=`` / ``gpu=`` / ``command=`` to override anything auto-detected,
 or set ``JOBNOTIFY_EXPERIMENT`` / ``JOBNOTIFY_GPU`` in the environment.
 
@@ -84,10 +85,13 @@ def notify_scope(
         with notify_scope("train.py", experiment="kd_pku_cgl"):
             main(...)
 
+    You get two alerts per run: one when the job starts (which GPU, which
+    command) and one when it ends (success or failure). Pass
+    ``notify_start=False`` — or set ``JOBNOTIFY_NOTIFY_START=0`` — for the
+    finish-only behaviour of 0.1.x.
+
     ``experiment`` / ``gpu`` / ``command`` are only overrides — leave them out
-    and they are filled in from the environment and ``sys.argv``. Pass
-    ``notify_start=True`` (or set ``JOBNOTIFY_NOTIFY_START=1``) to also get a
-    ping the moment the job starts.
+    and they are filled in from the environment and ``sys.argv``.
     """
     name = _resolve_job_name(job_name)
     ctx = _context.collect(

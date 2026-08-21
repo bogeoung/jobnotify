@@ -35,7 +35,7 @@ class Config:
     gpu_override: str | None = None
     context_enabled: bool = True
     gpu_query_enabled: bool = True
-    notify_start: bool = False
+    notify_start: bool = True
 
     @property
     def telegram_enabled(self) -> bool:
@@ -68,5 +68,5 @@ def load_config() -> Config:
         gpu_override=_clean(os.environ.get(ENV_GPU)),
         context_enabled=_flag(ENV_CONTEXT, True),
         gpu_query_enabled=_flag(ENV_GPU_QUERY, True),
-        notify_start=_flag(ENV_NOTIFY_START, False),
+        notify_start=_flag(ENV_NOTIFY_START, True),
     )

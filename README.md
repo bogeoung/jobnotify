@@ -2,7 +2,8 @@
 
 서버에서 오래 걸리는 파이썬 작업(학습·샘플링·평가 등)이 **끝나면 Telegram으로 알림**을 보내는 작은 모듈.
 
-- 알림에 **실험 이름 · GPU · 실행 커맨드**가 함께 찍힘 (어느 실험이 끝났는지 폰에서 바로 구분)
+- **시작할 때 1건, 끝날 때 1건** — "a.py가 gpu 0에서 이 커맨드로 시작", "a.py 종료(성공/실패)"
+- 알림에 **실험 이름 · GPU · 실행 커맨드**가 함께 찍힘 (어느 실험인지 폰에서 바로 구분)
 - 파이썬뿐 아니라 **아무 명령어나 감쌀 수 있음** — `jobnotify -- <커맨드>`
 - 의존성 **0개** — 파이썬 표준 라이브러리(`urllib`)만 사용
 - 알림 전송이 실패해도 **원래 작업은 절대 죽지 않음** (stderr 경고만)
@@ -70,6 +71,9 @@ if __name__ == "__main__":
         main(resume, epochs, patience)
 ```
 
+알림은 **시작 1건 + 종료 1건**이 옵니다. 종료 알림만 받으려면 `notify_start=False`
+(또는 `JOBNOTIFY_NOTIFY_START=0`).
+
 실험 이름을 붙이려면 (GPU·커맨드는 자동으로 들어갑니다):
 
 ```python
@@ -120,7 +124,7 @@ jobnotify --test          # 토큰·chat_id 설정이 맞는지 확인 (테스�
 | `-e, --experiment NAME` | 실험 id (기본값: `$JOBNOTIFY_EXPERIMENT`) |
 | `-g, --gpu TEXT` | 자동 감지된 GPU 설명을 직접 덮어쓰기 |
 | `--shell` | 나머지를 셸 한 줄로 실행 (`&&`, 파이프 등) |
-| `--start` | 시작할 때도 알림 1건 |
+| `--no-start` | 시작 알림 끄기 (종료 알림만) |
 | `--tail N` | 출력 마지막 N줄을 알림에 첨부 (기본 0 = 캡처 안 함, 출력 그대로 통과) |
 | `--no-gpu` | GPU 조회 생략 |
 | `--test` | 자격증명 확인용 테스트 알림 후 종료 |
@@ -132,21 +136,47 @@ jobnotify --test          # 토큰·chat_id 설정이 맞는지 확인 (테스�
 
 ## 알림에 찍히는 내용
 
+시작할 때:
+
+```
+▶️ Job started: poster/train.py / student pku+kd
+host: gpu-server-01
+experiment: kd_pku_cgl
+gpu: 1 (NVIDIA RTX A6000)
+command: python -m poster.train --datasets pku --pseudo outputs/poster/pseudo/cgl_train.jsonl
+start: 2026-07-09 01:10:22
+```
+
+끝날 때:
+
 ```
 ✅ Job finished: poster/train.py / student pku+kd
 host: gpu-server-01
 experiment: kd_pku_cgl
-gpu: CUDA_VISIBLE_DEVICES=1 | 0: NVIDIA RTX A6000
+gpu: 1 (NVIDIA RTX A6000)
 command: python -m poster.train --datasets pku --pseudo outputs/poster/pseudo/cgl_train.jsonl
 elapsed: 3h 12m 40s
 start: 2026-07-09 01:10:22
 end:   2026-07-09 04:23:02
 ```
 
+제목 줄(`Job finished:` 뒤)은 **코드에서 넘긴 라벨 그대로**입니다 — 기존 동작 그대로 유지.
+
 - **experiment** — `experiment=` 인자 또는 `JOBNOTIFY_EXPERIMENT` 환경변수. 없으면 줄 자체가 생략됩니다.
-- **gpu** — `CUDA_VISIBLE_DEVICES`(도커면 `NVIDIA_VISIBLE_DEVICES`) + `nvidia-smi`로 읽은 장치 이름.
-  이미 import된 torch가 CUDA를 초기화한 상태면 torch에서 읽습니다. **torch를 대신 import하거나
-  CUDA를 초기화하지 않습니다.** `nvidia-smi`가 없으면 그 줄만 빠집니다.
+- **gpu** — 이 프로세스가 실제로 쓰는 장치. `CUDA_VISIBLE_DEVICES`(도커면 `NVIDIA_VISIBLE_DEVICES`)로
+  고른 id에 `nvidia-smi`의 장치 이름을 붙입니다:
+
+  | 상황 | 출력 |
+  |---|---|
+  | `CUDA_VISIBLE_DEVICES=0` (3장 중 0번) | `0 (NVIDIA RTX A6000)` |
+  | `CUDA_VISIBLE_DEVICES=0,2` | `0,2 (NVIDIA RTX A6000 x2)` |
+  | 미설정 (3장 다 보임) | `0,1,2 (NVIDIA RTX A6000 x3)` |
+  | `CUDA_VISIBLE_DEVICES=` (빈 값) | `none (CPU only, CUDA_VISIBLE_DEVICES=empty)` |
+  | 도커 `--gpus '"device=1"'` | `0 (NVIDIA RTX A6000) [NVIDIA_VISIBLE_DEVICES=1]` |
+  | `nvidia-smi` 없음 | `1` (id만) |
+
+  이미 import된 torch가 CUDA를 초기화한 상태면 torch에서 이름을 읽습니다. **torch를 대신
+  import하거나 CUDA를 초기화하지 않습니다.**
 - **command** — `sys.argv` 복원. `python -m poster.train ...` 은 `train.py` 절대경로가 아니라
   입력한 그대로 보입니다. CLI로 감쌌으면 감싼 커맨드가 그대로 찍힙니다.
 
@@ -167,7 +197,7 @@ CLI로 감싼 경우엔 종료코드(`exit: 7`, `exit: killed by SIGTERM (-15)`)
 | `JOBNOTIFY_GPU` | | GPU 자동 감지 대신 이 문자열을 사용 |
 | `JOBNOTIFY_GPU_QUERY` | | `0`이면 `nvidia-smi` 호출 생략 |
 | `JOBNOTIFY_CONTEXT` | | `0`이면 experiment/gpu/command 줄을 빼고 0.1.x 와 똑같은 메시지 |
-| `JOBNOTIFY_NOTIFY_START` | | `1`이면 시작할 때도 알림 |
+| `JOBNOTIFY_NOTIFY_START` | | `0`이면 시작 알림 끄기 (기본은 켜짐) |
 
 토큰/chat_id 중 하나라도 없으면 알림은 조용히 비활성화됩니다.
 
@@ -201,9 +231,11 @@ docker run -d --name poster_kd --gpus '"device=1"' --shm-size=8g \
 
 ## 0.1.x 에서 올라올 때
 
-공개 API·설치 방법·환경변수는 그대로입니다. **기존 코드는 한 줄도 고칠 필요가 없고**,
-`notify_scope("...")` 그대로 두면 알림에 gpu/command 줄만 추가됩니다.
-예전 메시지 그대로가 좋으면 `JOBNOTIFY_CONTEXT=0`.
+공개 API·설치 방법·환경변수는 그대로입니다. **기존 코드는 한 줄도 고칠 필요가 없습니다.**
+`notify_scope("...")` 를 그대로 두면 알림 제목은 넘긴 라벨 그대로이고, 달라지는 건:
+
+- 시작 시점에 알림 1건이 추가로 옵니다 → 끄려면 `JOBNOTIFY_NOTIFY_START=0`
+- 메시지에 experiment/gpu/command 줄이 붙습니다 → 빼려면 `JOBNOTIFY_CONTEXT=0`
 
 새로 생긴 것: `jobnotify` CLI, `notify_scope(..., experiment=/gpu=/command=/notify_start=)`,
 그리고 위 표의 `JOBNOTIFY_EXPERIMENT` 계열 환경변수.
